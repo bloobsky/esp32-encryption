@@ -22,6 +22,42 @@ static uint32_t last_msg_id = 0;
 static const int GCM_NONCE_LEN = 12;
 static const int GCM_TAG_LEN   = 16;
 
+// META RX for testing and analysis
+static void publishMetaRx(uint32_t msg_id, int enc, const char* algorithm, unsigned int bytes,
+                          unsigned long dec_time_us, int replay, int auth_fail,
+                          uint32_t heap_before, uint32_t heap_after, uint32_t heap_min_after) {
+  char meta[512];
+  snprintf(meta, sizeof(meta),
+    "{"
+      "\"side\":\"rx\","
+      "\"msg_id\":%lu,"
+      "\"ts_ms\":%lu,"
+      "\"enc\":%d,"
+      "\"algorithm\":\"%s\","
+      "\"bytes\":%u,"
+      "\"dec_time_us\":%lu,"
+      "\"replay\":%d,"
+      "\"auth_fail\":%d,"
+      "\"heap_before\":%lu,"
+      "\"heap_after\":%lu,"
+      "\"heap_min\":%lu"
+    "}",
+    (unsigned long)msg_id,
+    (unsigned long)millis(),
+    enc,
+    algorithm,
+    bytes,
+    (unsigned long)dec_time_us,
+    replay,
+    auth_fail,
+    (unsigned long)heap_before,
+    (unsigned long)heap_after,
+    (unsigned long)heap_min_after
+  );
+
+  mqtt.publish(TOPIC_META_RX, meta);
+}
+
 // Extract msg_id from plaintext like: "MSG:123;TS:456;"
 static bool extractMsgId(const char* s, uint32_t &outId) {
   const char* p = strstr(s, "MSG:");
@@ -116,6 +152,10 @@ static void onMessage(char* topic, byte* payload, unsigned int length) {
       (unsigned long)heap_before, (unsigned long)heap_after, (unsigned long)heap_min_after
     );
 
+    // Publish metadata
+    publishMetaRx(ok ? msg_id : 0, 1, "CTR", length, (t1 - t0), replay ? 1 : 0, 0,
+                  heap_before, heap_after, heap_min_after);
+
     Serial.printf("Plain: %s\n", plainBuf);
     return;
   }
@@ -164,6 +204,11 @@ static void onMessage(char* topic, byte* payload, unsigned int length) {
         length, (unsigned long)(t1 - t0),
         (unsigned long)heap_before, (unsigned long)heap_after, (unsigned long)heap_min_after
       );
+
+      // Publish metadata (auth failure, msg_id unknown)
+      publishMetaRx(0, 2, "GCM", length, (t1 - t0), 0, 1,
+                    heap_before, heap_after, heap_min_after);
+
       return;
     }
 
@@ -181,6 +226,10 @@ static void onMessage(char* topic, byte* payload, unsigned int length) {
       (unsigned long)(ok_id ? msg_id : 0), replay ? 1 : 0,
       (unsigned long)heap_before, (unsigned long)heap_after, (unsigned long)heap_min_after
     );
+
+    // Publish receiver metadata (success)
+    publishMetaRx(ok_id ? msg_id : 0, 2, "GCM", length, (t1 - t0), replay ? 1 : 0, 0,
+                  heap_before, heap_after, heap_min_after);
 
     Serial.printf("Plain: %s\n", plainBuf);
     return;
@@ -211,6 +260,11 @@ static void onMessage(char* topic, byte* payload, unsigned int length) {
       length, (unsigned long)(ok ? msg_id : 0), replay ? 1 : 0,
       (unsigned long)heap_now, (unsigned long)heap_min_now
     );
+
+    // ADD: publish receiver metadata
+    publishMetaRx(ok ? msg_id : 0, 0, "PLAINTEXT", length, 0, replay ? 1 : 0, 0,
+                  heap_now, heap_now, heap_min_now);
+
     Serial.printf("Plain: %s\n", plainBuf);
     return;
   }

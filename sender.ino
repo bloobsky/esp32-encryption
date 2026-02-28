@@ -136,8 +136,8 @@ void loop() {
   int len = plainText.length();
 
   // Always-on heap snapshot (easy visibility + helps validate memory behaviour over time)
-  // - free_heap: instantaneous free heap
-  // - min_free_heap: low-water mark since boot (peak memory pressure indicator)
+  // free_heap: instantaneous free heap
+  // min_free_heap: low-water mark since boot (peak memory pressure indicator)
   Serial.printf(
     "HeapSnapshot: msg_id=%lu len=%d free_heap=%lu min_free_heap=%lu\n",
     (unsigned long)msg_id, len,
@@ -146,16 +146,21 @@ void loop() {
   );
 
   // Adaptive encryption decision:
-  // - FORCE_ENCRYPT=true => always encrypt (static baseline)
-  // - otherwise encrypt only when len > ENCRYPTION_THRESHOLD
+  // FORCE_ENCRYPT=true => always encrypt (static baseline)
+  // otherwise encrypt only when len > ENCRYPTION_THRESHOLD
   bool doEncrypt = FORCE_ENCRYPT || (len > ENCRYPTION_THRESHOLD);
+
+  // Metadata fields for TOPIC_META publish
+  const char* algorithm = "PLAINTEXT";
+  int enc_flag = 0;                 // 0 plaintext, 1 CTR, 2 GCM
+  unsigned long enc_time_us = 0;    // set for CTR/GCM
 
   int payload_len = 0;
 
   if (doEncrypt) {
     // Decide which algorithm based on size:
-    // - CTR for smaller payloads
-    // - GCM for larger payloads (adds integrity; more secure framing)
+    // CTR for smaller payloads
+    // GCM for larger payloads (adds integrity; more secure framing)
     bool useGcm = (len >= GCM_THRESHOLD);
 
     if (!useGcm) {
@@ -185,6 +190,11 @@ void loop() {
       uint32_t heap_min_after = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
 
       payload_len = 1 + 16 + len;
+
+      // ADD: Fill metadata fields (CTR)
+      enc_flag = 1;
+      algorithm = "CTR";
+      enc_time_us = (t1 - t0);
 
       // Dataset log line (per message)
       Serial.printf(
@@ -235,6 +245,11 @@ void loop() {
 
       payload_len = 1 + GCM_NONCE_LEN + len + GCM_TAG_LEN;
 
+      // Fill metadata fields (GCM)
+      enc_flag = 2;
+      algorithm = "GCM";
+      enc_time_us = (t1 - t0);
+
       // Dataset serial print
       Serial.printf(
         "Sender: msg_id=%lu payload_len=%d algorithm=GCM enc_time_us=%lu heap_before=%lu heap_after=%lu heap_min=%lu\n",
@@ -255,6 +270,11 @@ void loop() {
     uint32_t heap_now = ESP.getFreeHeap();
     uint32_t heap_min_now = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
 
+    // Fill metadata fields (plain)
+    enc_flag = 0;
+    algorithm = "PLAINTEXT";
+    enc_time_us = 0;
+
     Serial.printf(
       "Sender: msg_id=%lu payload_len=%d encrypted=0 heap_now=%lu heap_min=%lu\n",
       (unsigned long)msg_id, len,
@@ -268,6 +288,32 @@ void loop() {
   } else {
     Serial.println("Publish failed");
   }
+
+  // Publish readable metadata JSON to TOPIC_META for analysis
+  char meta[512];
+  snprintf(meta, sizeof(meta),
+    "{"
+      "\"msg_id\":%lu,"
+      "\"ts_ms\":%lu,"
+      "\"plaintext_len\":%d,"
+      "\"frame_bytes\":%d,"
+      "\"enc\":%d,"
+      "\"algorithm\":\"%s\","
+      "\"enc_time_us\":%lu,"
+      "\"free_heap\":%lu,"
+      "\"min_free_heap\":%lu"
+    "}",
+    (unsigned long)msg_id,
+    (unsigned long)millis(),
+    len,
+    payload_len,
+    enc_flag,
+    algorithm,
+    (unsigned long)enc_time_us,
+    (unsigned long)ESP.getFreeHeap(),
+    (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT)
+  );
+  mqtt.publish(TOPIC_META, meta);
 
   mqtt.loop();
 }
